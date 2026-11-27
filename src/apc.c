@@ -150,9 +150,10 @@ bool kops_append_rect_edit(kops_encoder *enc,
     if (out_comp_bytes) { *out_comp_bytes += body_len; }
 
     snprintf(first_hdr, sizeof(first_hdr),
-             "\x1b_Ga=f,f=%d,t=d,%si=%u,r=%u,X=1,x=%d,y=%d,s=%d,v=%d,q=2",
-             kitty_f, use_zlib ? "o=z," : "", (unsigned)image_id, (unsigned)frame_num,
-             (int)rect->x, (int)rect->y, (int)rect->w, (int)rect->h);
+             "\x1b_Ga=f,i=%u,r=%u,x=%d,y=%d,f=%d,s=%d,v=%d,t=d,%sX=1,q=2",
+             (unsigned)image_id, (unsigned)frame_num,
+             (int)rect->x, (int)rect->y, kitty_f, (int)rect->w, (int)rect->h,
+             use_zlib ? "o=z," : "");
     snprintf(cont_hdr, sizeof(cont_hdr), "\x1b_Ga=f,q=2");
 
     t0 = kops_now_ns();

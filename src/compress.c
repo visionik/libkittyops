@@ -442,9 +442,10 @@ static void kops_mr_worker(void *arg, size_t idx)
         return;
     }
     hdr_len = snprintf(hdr, sizeof(hdr),
-                       "\x1b_Ga=f,f=%d,t=d,o=z,i=%u,r=%u,X=1,x=%d,y=%d,s=%d,v=%d,q=2;",
-                       kitty_f, (unsigned)job->image_id, (unsigned)job->frame_num,
-                       (int)s->rect.x, (int)s->rect.y, (int)s->rect.w, (int)s->rect.h);
+                       "\x1b_Ga=f,i=%u,r=%u,x=%d,y=%d,f=%d,s=%d,v=%d,t=d,o=z,X=1,q=2;",
+                       (unsigned)job->image_id, (unsigned)job->frame_num,
+                       (int)s->rect.x, (int)s->rect.y, kitty_f,
+                       (int)s->rect.w, (int)s->rect.h);
     if (hdr_len <= 0) { return; }
     {
         const size_t need = (size_t)hdr_len + b64_len + 2u;
