@@ -48,6 +48,7 @@ void kops_encoder_reset(kops_encoder *enc)
     enc->tracked_h = 0;
     enc->active_frame = 1u;
     enc->frame2_created = false;
+    enc->scroll_miss_streak = 0;
 }
 
 void kops_encoder_destroy(kops_encoder *enc)
@@ -260,6 +261,7 @@ bool kops_encode_frame(kops_encoder *enc,
         enc->tracked_h = fb_h;
         enc->active_frame = 1u;
         enc->frame2_created = false;
+        enc->scroll_miss_streak = 0;
     }
 
     /* Full frame required if no previous frame or terminal doesn't support a=f */
@@ -293,12 +295,19 @@ bool kops_encode_frame(kops_encoder *enc,
             raw_cov >= 0.25f;
 
         if (can_compose) {
+            /* Adaptive backoff: after 4 consecutive misses (e.g. webcam/video/3D),
+             * probe only every 30th large frame so non-scrolling streams pay ~0 overhead. */
+            const bool probe_now = (enc->scroll_miss_streak < 4) ||
+                                   ((enc->scroll_miss_streak % 30) == 0);
             int32_t sdx = 0, sdy = 0;
             float sconf = 0.0f;
-            const uint64_t sc0 = kops_now_ns();
-            const bool scrolled = kops_detect_scroll(prev_fb, curr_fb, fb_w, fb_h, bpp,
-                                                     &bbox, &sdx, &sdy, &sconf);
-            st.scroll_ns = kops_now_ns() - sc0;
+            bool scrolled = false;
+            if (probe_now) {
+                const uint64_t sc0 = kops_now_ns();
+                scrolled = kops_detect_scroll(prev_fb, curr_fb, fb_w, fb_h, bpp,
+                                              &bbox, &sdx, &sdy, &sconf);
+                st.scroll_ns = kops_now_ns() - sc0;
+            }
 
             if (scrolled) {
                 kops_rect srects[KOPS_MAX_RECTS];
@@ -384,6 +393,7 @@ bool kops_encode_frame(kops_encoder *enc,
                             st.encode_ns += (kops_now_ns() - f0);
                         }
                         enc->active_frame = dst_f;
+                        enc->scroll_miss_streak = 0;
                         st.scroll_dx = sdx;
                         st.scroll_dy = sdy;
                         st.wire_bytes = enc->out_len;
@@ -392,6 +402,7 @@ bool kops_encode_frame(kops_encoder *enc,
                     }
                 }
             }
+            enc->scroll_miss_streak++;
         }
     }
 

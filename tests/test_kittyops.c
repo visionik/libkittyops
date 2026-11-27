@@ -273,6 +273,37 @@ static void test_scroll_and_compose_pipeline(void)
     check(kops_encode_frame(enc, 43, f0, f1, w, h, 3, &caps, &apc, &apc_len, &st), "storage-capped scroll");
     check(st.mode != KOPS_MODE_SCROLL_COMPOSE, "storage cap prevents OOM a=c");
 
+    /* Adaptive backoff: 4 non-scrolling large frames skip probing on frame 5 (scroll_ns == 0),
+     * then re-engage automatically on the 30th frame when scrolling resumes. */
+    {
+        uint8_t *solid_a = (uint8_t *)malloc(len);
+        uint8_t *solid_b = (uint8_t *)malloc(len);
+        int k;
+        memset(solid_a, 0x20, len);
+        memset(solid_b, 0x90, len);
+        kops_caps_default(&caps);
+        kops_encoder_reset(enc);
+        for (k = 0; k < 4; ++k) {
+            check(kops_encode_frame(enc, 44, solid_a, solid_b, w, h, 3, &caps, &apc, &apc_len, &st),
+                  "backoff warmup miss");
+            check(st.scroll_ns > 0u, "first 4 large frames probe scroll");
+        }
+        /* Frame 5 (miss_streak == 4): skipped completely */
+        check(kops_encode_frame(enc, 44, solid_a, solid_b, w, h, 3, &caps, &apc, &apc_len, &st),
+              "backoff skip frame 5");
+        check_int((int64_t)st.scroll_ns, 0, "backoff skips scroll probe after 4 misses");
+        /* Advance to miss_streak == 30 -> periodic re-probe catches a real scroll */
+        for (k = 5; k < 30; ++k) {
+            check(kops_encode_frame(enc, 44, solid_a, solid_b, w, h, 3, &caps, &apc, &apc_len, &st),
+                  "backoff idle frame");
+        }
+        check(kops_encode_frame(enc, 44, f0, f1, w, h, 3, &caps, &apc, &apc_len, &st),
+              "backoff re-probe catches real scroll");
+        check_int((int)st.mode, (int)KOPS_MODE_SCROLL_COMPOSE, "re-probe engages a=c scroll compose");
+        free(solid_a);
+        free(solid_b);
+    }
+
     free(f0);
     free(f1);
     free(f2);

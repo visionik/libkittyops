@@ -112,6 +112,7 @@ struct kops_encoder {
     int32_t tracked_h;
     uint32_t active_frame; /* 1 or 2 */
     bool frame2_created;
+    int32_t scroll_miss_streak; /* adaptive backoff on non-scrolling video/3D streams */
 };
 
 uint8_t *kops_ensure_z_buf(kops_encoder *enc, size_t need);
