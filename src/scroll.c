@@ -168,32 +168,66 @@ bool kops_detect_scroll(const uint8_t *prev, const uint8_t *curr,
         for (y = ry0; y < ry1 && y < max_y; ++y) {
             prev_ok[y] = kops_row_fingerprint(prev, fb_w, bpp, ix0, ix1, y, &prev_h[y]) ? 1u : 0u;
         }
-        for (s = 0; s < 24; ++s) {
-            const int32_t cy = iy0 + ((s * (iy1 - iy0)) / 24);
-            uint64_t ch = 0;
-            int32_t lo, hi, py;
-            if (cy >= max_y || !kops_row_fingerprint(curr, fb_w, bpp, ix0, ix1, cy, &ch)) {
-                continue;
+        /* Prefer transition/edge rows (hash != previous row's hash) so tall
+         * vertically-constant tile bands never falsely vote for dy = +-1. */
+        {
+            uint64_t curr_h[2048];
+            uint8_t curr_ok[2048];
+            int32_t edge_rows[48];
+            int32_t n_edges = 0;
+            const int32_t stride_y = ((iy1 - iy0) >= 96) ? ((iy1 - iy0) / 96) : 1;
+
+            for (y = iy0; y < iy1 && y < max_y; y += stride_y) {
+                curr_ok[y] = kops_row_fingerprint(curr, fb_w, bpp, ix0, ix1, y, &curr_h[y]) ? 1u : 0u;
+                if (curr_ok[y] && n_edges < 48) {
+                    uint64_t above_h = 0;
+                    const bool above_ok = (y > ry0) &&
+                                          kops_row_fingerprint(curr, fb_w, bpp, ix0, ix1, y - 1, &above_h);
+                    if (!above_ok || above_h != curr_h[y]) {
+                        edge_rows[n_edges++] = y;
+                    }
+                }
             }
-            lo = cy - max_dy;
-            if (lo < ry0) { lo = ry0; }
-            hi = cy + max_dy;
-            if (hi > ry1) { hi = ry1; }
-            if (hi > max_y) { hi = max_y; }
-            for (py = lo; py < hi; ++py) {
-                if (py != cy && prev_ok[py] && prev_h[py] == ch) {
-                    const int32_t dy = cy - py;
-                    int32_t vi;
-                    for (vi = 0; vi < n_votes; ++vi) {
-                        if (votes_dy[vi] == dy) {
-                            votes_cnt[vi]++;
+            /* Fallback to evenly spaced rows if few edge transitions exist */
+            if (n_edges < 4) {
+                for (s = 0; s < 24 && n_edges < 48; ++s) {
+                    const int32_t cy = iy0 + ((s * (iy1 - iy0)) / 24);
+                    if (cy < max_y && kops_row_fingerprint(curr, fb_w, bpp, ix0, ix1, cy, &curr_h[cy])) {
+                        edge_rows[n_edges++] = cy;
+                    }
+                }
+            }
+            for (s = 0; s < n_edges; ++s) {
+                const int32_t cy = edge_rows[s];
+                const uint64_t ch = curr_h[cy];
+                int32_t d;
+                /* Search outward from |dy|=1 matching edge rows to edge rows first. */
+                for (d = 1; d <= max_dy; ++d) {
+                    int32_t sign;
+                    bool matched = false;
+                    for (sign = 1; sign >= -1; sign -= 2) {
+                        const int32_t dy = d * sign;
+                        const int32_t py = cy - dy;
+                        if (py >= ry0 && py < ry1 && py < max_y && prev_ok[py] && prev_h[py] == ch &&
+                            (py == ry0 || !prev_ok[py - 1] || prev_h[py - 1] != ch)) {
+                            int32_t vi;
+                            for (vi = 0; vi < n_votes; ++vi) {
+                                if (votes_dy[vi] == dy) {
+                                    votes_cnt[vi]++;
+                                    break;
+                                }
+                            }
+                            if (vi == n_votes && n_votes < 32) {
+                                votes_dy[n_votes] = dy;
+                                votes_cnt[n_votes] = 1;
+                                n_votes++;
+                            }
+                            matched = true;
                             break;
                         }
                     }
-                    if (vi == n_votes && n_votes < 32) {
-                        votes_dy[n_votes] = dy;
-                        votes_cnt[n_votes] = 1;
-                        n_votes++;
+                    if (matched) {
+                        break;
                     }
                 }
             }
@@ -202,7 +236,10 @@ bool kops_detect_scroll(const uint8_t *prev, const uint8_t *curr,
             int32_t best_vi = -1, best_vc = 2;
             int32_t vi;
             for (vi = 0; vi < n_votes; ++vi) {
-                if (votes_cnt[vi] > best_vc) {
+                const int32_t abs_cur = votes_dy[vi] >= 0 ? votes_dy[vi] : -votes_dy[vi];
+                const int32_t abs_best = best_vi >= 0 ? (votes_dy[best_vi] >= 0 ? votes_dy[best_vi] : -votes_dy[best_vi]) : 0x7FFFFFFF;
+                if (votes_cnt[vi] > best_vc ||
+                    (votes_cnt[vi] == best_vc && best_vi >= 0 && abs_cur < abs_best)) {
                     best_vc = votes_cnt[vi];
                     best_vi = vi;
                 }
@@ -233,32 +270,60 @@ bool kops_detect_scroll(const uint8_t *prev, const uint8_t *curr,
         for (x = rx0; x < rx1 && x < max_x; ++x) {
             prev_ok[x] = kops_col_fingerprint(prev, fb_w, bpp, iy0, iy1, x, &prev_h[x]) ? 1u : 0u;
         }
-        for (s = 0; s < 24; ++s) {
-            const int32_t cx = ix0 + ((s * (ix1 - ix0)) / 24);
-            uint64_t ch = 0;
-            int32_t lo, hi, px;
-            if (cx >= max_x || !kops_col_fingerprint(curr, fb_w, bpp, iy0, iy1, cx, &ch)) {
-                continue;
+        {
+            uint64_t curr_h[4096];
+            int32_t edge_cols[48];
+            int32_t n_edges = 0;
+            const int32_t stride_x = ((ix1 - ix0) >= 96) ? ((ix1 - ix0) / 96) : 1;
+
+            for (x = ix0; x < ix1 && x < max_x; x += stride_x) {
+                if (kops_col_fingerprint(curr, fb_w, bpp, iy0, iy1, x, &curr_h[x]) && n_edges < 48) {
+                    uint64_t left_h = 0;
+                    const bool left_ok = (x > rx0) &&
+                                         kops_col_fingerprint(curr, fb_w, bpp, iy0, iy1, x - 1, &left_h);
+                    if (!left_ok || left_h != curr_h[x]) {
+                        edge_cols[n_edges++] = x;
+                    }
+                }
             }
-            lo = cx - max_dx;
-            if (lo < rx0) { lo = rx0; }
-            hi = cx + max_dx;
-            if (hi > rx1) { hi = rx1; }
-            if (hi > max_x) { hi = max_x; }
-            for (px = lo; px < hi; ++px) {
-                if (px != cx && prev_ok[px] && prev_h[px] == ch) {
-                    const int32_t dx = cx - px;
-                    int32_t vi;
-                    for (vi = 0; vi < n_votes; ++vi) {
-                        if (votes_dx[vi] == dx) {
-                            votes_cnt[vi]++;
+            if (n_edges < 4) {
+                for (s = 0; s < 24 && n_edges < 48; ++s) {
+                    const int32_t cx = ix0 + ((s * (ix1 - ix0)) / 24);
+                    if (cx < max_x && kops_col_fingerprint(curr, fb_w, bpp, iy0, iy1, cx, &curr_h[cx])) {
+                        edge_cols[n_edges++] = cx;
+                    }
+                }
+            }
+            for (s = 0; s < n_edges; ++s) {
+                const int32_t cx = edge_cols[s];
+                const uint64_t ch = curr_h[cx];
+                int32_t d;
+                for (d = 1; d <= max_dx; ++d) {
+                    int32_t sign;
+                    bool matched = false;
+                    for (sign = 1; sign >= -1; sign -= 2) {
+                        const int32_t dx = d * sign;
+                        const int32_t px = cx - dx;
+                        if (px >= rx0 && px < rx1 && px < max_x && prev_ok[px] && prev_h[px] == ch &&
+                            (px == rx0 || !prev_ok[px - 1] || prev_h[px - 1] != ch)) {
+                            int32_t vi;
+                            for (vi = 0; vi < n_votes; ++vi) {
+                                if (votes_dx[vi] == dx) {
+                                    votes_cnt[vi]++;
+                                    break;
+                                }
+                            }
+                            if (vi == n_votes && n_votes < 32) {
+                                votes_dx[n_votes] = dx;
+                                votes_cnt[n_votes] = 1;
+                                n_votes++;
+                            }
+                            matched = true;
                             break;
                         }
                     }
-                    if (vi == n_votes && n_votes < 32) {
-                        votes_dx[n_votes] = dx;
-                        votes_cnt[n_votes] = 1;
-                        n_votes++;
+                    if (matched) {
+                        break;
                     }
                 }
             }
@@ -267,7 +332,10 @@ bool kops_detect_scroll(const uint8_t *prev, const uint8_t *curr,
             int32_t best_vi = -1, best_vc = 2;
             int32_t vi;
             for (vi = 0; vi < n_votes; ++vi) {
-                if (votes_cnt[vi] > best_vc) {
+                const int32_t abs_cur = votes_dx[vi] >= 0 ? votes_dx[vi] : -votes_dx[vi];
+                const int32_t abs_best = best_vi >= 0 ? (votes_dx[best_vi] >= 0 ? votes_dx[best_vi] : -votes_dx[best_vi]) : 0x7FFFFFFF;
+                if (votes_cnt[vi] > best_vc ||
+                    (votes_cnt[vi] == best_vc && best_vi >= 0 && abs_cur < abs_best)) {
                     best_vc = votes_cnt[vi];
                     best_vi = vi;
                 }
