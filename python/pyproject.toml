@@ -1,0 +1,13 @@
+[project]
+name = "kittyops"
+version = "0.1.0"
+description = "Optional native C99 Kitty graphics accelerator (SIMD tile-diff, a=c scroll compose, parallel zlib/libdeflate) for pixcell and Python TUIs."
+license = "MIT"
+requires-python = ">=3.11"
+
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["kittyops"]
