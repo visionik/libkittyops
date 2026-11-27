@@ -572,6 +572,24 @@ kops_diff_outcome kops_tile_diff_rects(const uint8_t *prev, const uint8_t *curr,
  * Fused XRGB8888/ARGB8888 -> RGB24/RGBA32 convert + 32px NEON clean-tile diff
  * -------------------------------------------------------------------------- */
 
+#ifdef KOPS_HAVE_NEON
+/* Return exact first and past-last nonzero byte lane in a 16-byte NEON diff vector. */
+static inline void kops_neon_diff_span16(uint8x16_t diff, int32_t base_x,
+                                         int32_t *sx0, int32_t *sx1)
+{
+    /* Pack 16 nonzero-byte flags into a 64-bit nibble mask (4 bits per lane). */
+    const uint8x16_t inv = vmvnq_u8(vceqq_u8(diff, vdupq_n_u8(0)));
+    const uint8x8_t mask8 = vshrn_n_u16(vreinterpretq_u16_u8(inv), 4);
+    const uint64_t mask = vget_lane_u64(vreinterpret_u64_u8(mask8), 0);
+    if (mask != 0u) {
+        const int32_t first = base_x + (int32_t)(__builtin_ctzll(mask) >> 2);
+        const int32_t last = base_x + 16 - (int32_t)(__builtin_clzll(mask) >> 2);
+        if (first < *sx0) { *sx0 = first; }
+        if (last > *sx1) { *sx1 = last; }
+    }
+}
+#endif
+
 static int32_t kops_convert_and_diff_band_xrgb(const uint8_t *src_pixels, int32_t src_pitch,
                                                uint8_t *scratch_rgb, bool use_rgba,
                                                int32_t fb_w, int32_t tile, int32_t tiles_x,
@@ -615,8 +633,8 @@ static int32_t kops_convert_and_diff_band_xrgb(const uint8_t *src_pixels, int32_
                         vst3q_u8(drow + (size_t)x * 3u, out_a);
                         vst3q_u8(drow + (size_t)(x + 16) * 3u, out_b);
                         row_dirty = true;
-                        if (x < sx0) { sx0 = x; }
-                        if (x + 32 > sx1) { sx1 = x + 32; }
+                        kops_neon_diff_span16(diff_a, x, &sx0, &sx1);
+                        kops_neon_diff_span16(diff_b, x + 16, &sx0, &sx1);
                     }
                     x += 32;
                 }
@@ -631,8 +649,7 @@ static int32_t kops_convert_and_diff_band_xrgb(const uint8_t *src_pixels, int32_
                         out_a.val[0] = a.val[2]; out_a.val[1] = a.val[1]; out_a.val[2] = a.val[0];
                         vst3q_u8(drow + (size_t)x * 3u, out_a);
                         row_dirty = true;
-                        if (x < sx0) { sx0 = x; }
-                        if (x + 16 > sx1) { sx1 = x + 16; }
+                        kops_neon_diff_span16(diff, x, &sx0, &sx1);
                     }
                     x += 16;
                 }
@@ -649,8 +666,7 @@ static int32_t kops_convert_and_diff_band_xrgb(const uint8_t *src_pixels, int32_
                         out_a.val[2] = a.val[0]; out_a.val[3] = a.val[3];
                         vst4q_u8(drow + (size_t)x * 4u, out_a);
                         row_dirty = true;
-                        if (x < sx0) { sx0 = x; }
-                        if (x + 16 > sx1) { sx1 = x + 16; }
+                        kops_neon_diff_span16(diff, x, &sx0, &sx1);
                     }
                     x += 16;
                 }

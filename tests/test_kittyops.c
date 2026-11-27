@@ -115,6 +115,10 @@ static void test_tile_diff_and_xrgb(void)
                                          rects, 16, &count, &bbox);
         check_int((int)res, (int)KOPS_DIFF_RECT, "xrgb single pixel -> RECT");
         check_int(count, 1, "xrgb single pixel count");
+        check_int(rects[0].x, 40, "xrgb exact trimmed x");
+        check_int(rects[0].y, 20, "xrgb exact trimmed y");
+        check_int(rects[0].w, 1, "xrgb exact trimmed w");
+        check_int(rects[0].h, 1, "xrgb exact trimmed h");
         check_int(scratch[((size_t)20 * (size_t)w + 40u) * 3u + 0], 0xAA, "xrgb updated R");
         check_int(scratch[((size_t)20 * (size_t)w + 40u) * 3u + 1], 0xBB, "xrgb updated G");
         check_int(scratch[((size_t)20 * (size_t)w + 40u) * 3u + 2], 0xCC, "xrgb updated B");
