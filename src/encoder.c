@@ -202,8 +202,8 @@ static bool kops_encode_full_frame(kops_encoder *enc,
 
         if (caps->placeholders) {
             snprintf(first_hdr, sizeof(first_hdr),
-                     "\x1b_Ga=t,f=%d,t=d,o=z,i=%u,s=%d,v=%d,q=2",
-                     kitty_f, (unsigned)image_id, (int)fb_w, (int)fb_h);
+                     "\x1b_Ga=t,t=d,i=%u,f=%d,s=%d,v=%d,o=z,q=2",
+                     (unsigned)image_id, kitty_f, (int)fb_w, (int)fb_h);
         } else {
             snprintf(first_hdr, sizeof(first_hdr),
                      "\x1b_Ga=T,f=%d,t=d,o=z,i=%u,p=1,s=%d,v=%d,C=1,q=2",
