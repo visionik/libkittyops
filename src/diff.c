@@ -3,6 +3,213 @@
 #if defined(__ARM_NEON) || defined(__aarch64__)
 #include <arm_neon.h>
 #define KOPS_HAVE_NEON 1
+#elif (defined(__x86_64__) || defined(_M_X64)) && (defined(__GNUC__) || defined(__clang__))
+#include <immintrin.h>
+#define KOPS_HAVE_X86_SIMD 1
+
+static int kops_x86_simd_level(void)
+{
+    static int cached = -1;
+    int lv = cached;
+    if (lv < 0) {
+        if (__builtin_cpu_supports("avx2")) {
+            lv = 2;
+        } else if (__builtin_cpu_supports("ssse3")) {
+            lv = 1;
+        } else {
+            lv = 0;
+        }
+        cached = lv;
+    }
+    return lv;
+}
+
+__attribute__((target("avx2")))
+static bool kops_row_chunk_equal_avx2(const uint8_t *a, const uint8_t *b, size_t bytes)
+{
+    size_t i = 0;
+    __m256i acc = _mm256_setzero_si256();
+    for (; i + 64u <= bytes; i += 64u) {
+        __m256i x0 = _mm256_xor_si256(_mm256_loadu_si256((const __m256i *)(a + i)),
+                                      _mm256_loadu_si256((const __m256i *)(b + i)));
+        __m256i x1 = _mm256_xor_si256(_mm256_loadu_si256((const __m256i *)(a + i + 32)),
+                                      _mm256_loadu_si256((const __m256i *)(b + i + 32)));
+        acc = _mm256_or_si256(acc, _mm256_or_si256(x0, x1));
+    }
+    for (; i + 32u <= bytes; i += 32u) {
+        __m256i x0 = _mm256_xor_si256(_mm256_loadu_si256((const __m256i *)(a + i)),
+                                      _mm256_loadu_si256((const __m256i *)(b + i)));
+        acc = _mm256_or_si256(acc, x0);
+    }
+    if (!_mm256_testz_si256(acc, acc)) {
+        return false;
+    }
+    for (; i < bytes; ++i) {
+        if (a[i] != b[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+__attribute__((target("ssse3")))
+static bool kops_row_chunk_equal_ssse3(const uint8_t *a, const uint8_t *b, size_t bytes)
+{
+    size_t i = 0;
+    __m128i acc = _mm_setzero_si128();
+    for (; i + 32u <= bytes; i += 32u) {
+        __m128i x0 = _mm_xor_si128(_mm_loadu_si128((const __m128i *)(a + i)),
+                                   _mm_loadu_si128((const __m128i *)(b + i)));
+        __m128i x1 = _mm_xor_si128(_mm_loadu_si128((const __m128i *)(a + i + 16)),
+                                   _mm_loadu_si128((const __m128i *)(b + i + 16)));
+        acc = _mm_or_si128(acc, _mm_or_si128(x0, x1));
+    }
+    for (; i + 16u <= bytes; i += 16u) {
+        __m128i x0 = _mm_xor_si128(_mm_loadu_si128((const __m128i *)(a + i)),
+                                   _mm_loadu_si128((const __m128i *)(b + i)));
+        acc = _mm_or_si128(acc, x0);
+    }
+    if (_mm_movemask_epi8(_mm_cmpeq_epi8(acc, _mm_setzero_si128())) != 0xFFFF) {
+        return false;
+    }
+    for (; i < bytes; ++i) {
+        if (a[i] != b[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static inline void kops_store12(uint8_t *dst, __m128i v)
+{
+    uint64_t lo = (uint64_t)_mm_cvtsi128_si64(v);
+    uint32_t hi = (uint32_t)_mm_cvtsi128_si32(_mm_srli_si128(v, 8));
+    memcpy(dst, &lo, 8);
+    memcpy(dst + 8, &hi, 4);
+}
+
+static inline __m128i kops_load12(const uint8_t *src)
+{
+    uint64_t lo = 0;
+    uint32_t hi = 0;
+    memcpy(&lo, src, 8);
+    memcpy(&hi, src + 8, 4);
+    return _mm_or_si128(_mm_cvtsi64_si128((long long)lo),
+                        _mm_slli_si128(_mm_cvtsi32_si128((int)hi), 8));
+}
+
+/* Tighten [sx0, sx1) from a 12-bit byte-mismatch mask covering 4 RGB24 pixels. */
+static inline void kops_x86_rgb4_span(uint32_t diff_mask12, int32_t base_x,
+                                      int32_t *sx0, int32_t *sx1)
+{
+    if (diff_mask12 != 0u) {
+        const int32_t first = base_x + (__builtin_ctz(diff_mask12) / 3);
+        const int32_t last_byte = 31 - __builtin_clz(diff_mask12);
+        const int32_t last = base_x + (last_byte / 3) + 1;
+        if (first < *sx0) { *sx0 = first; }
+        if (last > *sx1) { *sx1 = last; }
+    }
+}
+
+__attribute__((target("avx2")))
+static bool kops_xrgb_row_avx2(const uint8_t *srow, uint8_t *drow, int32_t tw, bool use_rgba,
+                               int32_t *out_x, int32_t *sx0, int32_t *sx1)
+{
+    int32_t x = 0;
+    bool row_dirty = false;
+
+    if (!use_rgba) {
+        const __m256i shuf = _mm256_setr_epi8(
+            2, 1, 0, 6, 5, 4, 10, 9, 8, 14, 13, 12, -1, -1, -1, -1,
+            2, 1, 0, 6, 5, 4, 10, 9, 8, 14, 13, 12, -1, -1, -1, -1);
+        while (x + 8 <= tw) {
+            const __m256i src = _mm256_loadu_si256((const __m256i *)(srow + (size_t)x * 4u));
+            const __m256i rgb = _mm256_shuffle_epi8(src, shuf);
+            const __m128i lo = _mm256_castsi256_si128(rgb);
+            const __m128i hi = _mm256_extracti128_si256(rgb, 1);
+            const __m128i dlo = kops_load12(drow + (size_t)x * 3u);
+            const __m128i dhi = kops_load12(drow + (size_t)(x + 4) * 3u);
+            const uint32_t m0 = (uint32_t)(~_mm_movemask_epi8(_mm_cmpeq_epi8(lo, dlo))) & 0xFFFu;
+            const uint32_t m1 = (uint32_t)(~_mm_movemask_epi8(_mm_cmpeq_epi8(hi, dhi))) & 0xFFFu;
+            if ((m0 | m1) != 0u) {
+                if (m0) {
+                    kops_store12(drow + (size_t)x * 3u, lo);
+                    kops_x86_rgb4_span(m0, x, sx0, sx1);
+                }
+                if (m1) {
+                    kops_store12(drow + (size_t)(x + 4) * 3u, hi);
+                    kops_x86_rgb4_span(m1, x + 4, sx0, sx1);
+                }
+                row_dirty = true;
+            }
+            x += 8;
+        }
+    } else {
+        const __m256i shuf = _mm256_setr_epi8(
+            2, 1, 0, 3, 6, 5, 4, 7, 10, 9, 8, 11, 14, 13, 12, 15,
+            2, 1, 0, 3, 6, 5, 4, 7, 10, 9, 8, 11, 14, 13, 12, 15);
+        while (x + 8 <= tw) {
+            const __m256i src = _mm256_loadu_si256((const __m256i *)(srow + (size_t)x * 4u));
+            const __m256i rgba = _mm256_shuffle_epi8(src, shuf);
+            const __m256i dst = _mm256_loadu_si256((const __m256i *)(drow + (size_t)x * 4u));
+            const uint32_t diff_m = ~(uint32_t)_mm256_movemask_epi8(_mm256_cmpeq_epi8(rgba, dst));
+            if (diff_m != 0u) {
+                const int32_t first = x + (__builtin_ctz(diff_m) >> 2);
+                const int32_t last = x + 8 - (__builtin_clz(diff_m) >> 2);
+                _mm256_storeu_si256((__m256i *)(drow + (size_t)x * 4u), rgba);
+                if (first < *sx0) { *sx0 = first; }
+                if (last > *sx1) { *sx1 = last; }
+                row_dirty = true;
+            }
+            x += 8;
+        }
+    }
+    *out_x = x;
+    return row_dirty;
+}
+
+__attribute__((target("ssse3")))
+static bool kops_xrgb_row_ssse3(const uint8_t *srow, uint8_t *drow, int32_t tw, bool use_rgba,
+                                int32_t *out_x, int32_t *sx0, int32_t *sx1)
+{
+    int32_t x = 0;
+    bool row_dirty = false;
+
+    if (!use_rgba) {
+        const __m128i shuf = _mm_setr_epi8(2, 1, 0, 6, 5, 4, 10, 9, 8, 14, 13, 12, -1, -1, -1, -1);
+        while (x + 4 <= tw) {
+            const __m128i src = _mm_loadu_si128((const __m128i *)(srow + (size_t)x * 4u));
+            const __m128i rgb = _mm_shuffle_epi8(src, shuf);
+            const __m128i dlo = kops_load12(drow + (size_t)x * 3u);
+            const uint32_t m0 = (uint32_t)(~_mm_movemask_epi8(_mm_cmpeq_epi8(rgb, dlo))) & 0xFFFu;
+            if (m0 != 0u) {
+                kops_store12(drow + (size_t)x * 3u, rgb);
+                kops_x86_rgb4_span(m0, x, sx0, sx1);
+                row_dirty = true;
+            }
+            x += 4;
+        }
+    } else {
+        const __m128i shuf = _mm_setr_epi8(2, 1, 0, 3, 6, 5, 4, 7, 10, 9, 8, 11, 14, 13, 12, 15);
+        while (x + 4 <= tw) {
+            const __m128i src = _mm_loadu_si128((const __m128i *)(srow + (size_t)x * 4u));
+            const __m128i rgba = _mm_shuffle_epi8(src, shuf);
+            const __m128i dst = _mm_loadu_si128((const __m128i *)(drow + (size_t)x * 4u));
+            const uint32_t diff_m = (uint32_t)(~_mm_movemask_epi8(_mm_cmpeq_epi8(rgba, dst))) & 0xFFFFu;
+            if (diff_m != 0u) {
+                const int32_t first = x + (__builtin_ctz(diff_m) >> 2);
+                const int32_t last = x + ((31 - __builtin_clz(diff_m)) >> 2) + 1;
+                _mm_storeu_si128((__m128i *)(drow + (size_t)x * 4u), rgba);
+                if (first < *sx0) { *sx0 = first; }
+                if (last > *sx1) { *sx1 = last; }
+                row_dirty = true;
+            }
+            x += 4;
+        }
+    }
+    *out_x = x;
+    return row_dirty;
+}
 #endif
 
 static inline int32_t kops_min32(int32_t a, int32_t b) { return a < b ? a : b; }
@@ -275,6 +482,15 @@ static inline bool kops_row_chunk_equal(const uint8_t *a, const uint8_t *b, size
         }
     }
     return true;
+#elif defined(KOPS_HAVE_X86_SIMD)
+    const int lv = kops_x86_simd_level();
+    if (lv >= 2 && bytes >= 32u) {
+        return kops_row_chunk_equal_avx2(a, b, bytes);
+    }
+    if (lv >= 1 && bytes >= 16u) {
+        return kops_row_chunk_equal_ssse3(a, b, bytes);
+    }
+    return memcmp(a, b, bytes) == 0;
 #else
     return memcmp(a, b, bytes) == 0;
 #endif
@@ -669,6 +885,19 @@ static int32_t kops_convert_and_diff_band_xrgb(const uint8_t *src_pixels, int32_
                         kops_neon_diff_span16(diff, x, &sx0, &sx1);
                     }
                     x += 16;
+                }
+            }
+#elif defined(KOPS_HAVE_X86_SIMD)
+            {
+                const int lv = kops_x86_simd_level();
+                if (lv >= 2 && tw >= 8) {
+                    if (kops_xrgb_row_avx2(srow, drow, tw, use_rgba, &x, &sx0, &sx1)) {
+                        row_dirty = true;
+                    }
+                } else if (lv >= 1 && tw >= 4) {
+                    if (kops_xrgb_row_ssse3(srow, drow, tw, use_rgba, &x, &sx0, &sx1)) {
+                        row_dirty = true;
+                    }
                 }
             }
 #endif

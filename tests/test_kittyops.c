@@ -127,6 +127,24 @@ static void test_tile_diff_and_xrgb(void)
         res = kops_convert_xrgb_and_diff(xrgb, w * 4, scratch, w, h, false, 32, 0.90f,
                                          rects, 16, &count, &bbox);
         check_int((int)res, (int)KOPS_DIFF_NONE, "xrgb repeat -> NONE");
+
+        /* ARGB8888 -> RGBA32 fused path */
+        {
+            uint8_t *rgba_scratch = (uint8_t *)calloc((size_t)w * (size_t)h * 4u, 1);
+            res = kops_convert_xrgb_and_diff(xrgb, w * 4, rgba_scratch, w, h, true, 32, 0.90f,
+                                             rects, 16, &count, &bbox);
+            check_int((int)res, (int)KOPS_DIFF_RECT, "argb single pixel -> RECT");
+            check_int(rects[0].x, 40, "argb exact trimmed x");
+            check_int(rects[0].w, 1, "argb exact trimmed w");
+            check_int(rgba_scratch[off + 0], 0xAA, "argb updated R");
+            check_int(rgba_scratch[off + 1], 0xBB, "argb updated G");
+            check_int(rgba_scratch[off + 2], 0xCC, "argb updated B");
+            check_int(rgba_scratch[off + 3], 0xFF, "argb updated A");
+            res = kops_convert_xrgb_and_diff(xrgb, w * 4, rgba_scratch, w, h, true, 32, 0.90f,
+                                             rects, 16, &count, &bbox);
+            check_int((int)res, (int)KOPS_DIFF_NONE, "argb repeat -> NONE");
+            free(rgba_scratch);
+        }
         free(xrgb);
         free(scratch);
     }
