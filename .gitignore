@@ -1,4 +1,7 @@
 build/
+dist/
+wheelhouse/
+.venv/
 *.o
 *.a
 *.dylib

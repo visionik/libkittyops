@@ -1,0 +1,122 @@
+name: CI & Wheels
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  c-tests:
+    name: C & Python tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install compression deps (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build zlib1g-dev libdeflate-dev
+      - name: Install compression deps (macOS)
+        if: runner.os == 'macOS'
+        run: brew install cmake libdeflate
+      - name: Build and test C + Python
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j
+          ctest --test-dir build --output-on-failure
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            LIB="$PWD/build/libkittyops.dylib"
+          else
+            LIB="$PWD/build/libkittyops.so"
+          fi
+          KITTYOPS_LIB="$LIB" PYTHONPATH="$PWD/python" python3 -m unittest discover -s tests -p 'test_*.py' -v
+
+  wheels:
+    name: Build wheels (${{ matrix.os }} / ${{ matrix.arch }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            arch: arm64
+            macos_target: "11.0"
+          - os: macos-15-intel
+            arch: x86_64
+            macos_target: "10.15"
+          - os: ubuntu-24.04
+            arch: x86_64
+            macos_target: ""
+          - os: ubuntu-24.04-arm
+            arch: aarch64
+            macos_target: ""
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install macOS static libdeflate
+        if: runner.os == 'macOS'
+        run: brew install libdeflate
+      - name: Build wheel via cibuildwheel
+        uses: pypa/cibuildwheel@v2.23.3
+        env:
+          # ctypes-only wheel with wheel.py-api = "py3": one wheel per OS+arch works on Python 3.11+
+          CIBW_BUILD: "cp312-*"
+          CIBW_ARCHS_MACOS: ${{ matrix.arch }}
+          CIBW_ARCHS_LINUX: ${{ matrix.arch }}
+          MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macos_target }}
+          CIBW_MANYLINUX_X86_64_IMAGE: manylinux_2_28
+          CIBW_MANYLINUX_AARCH64_IMAGE: manylinux_2_28
+          CIBW_BEFORE_ALL_LINUX: |
+            dnf install -y cmake zlib-devel libdeflate-devel || yum install -y cmake zlib-devel || true
+          CIBW_TEST_COMMAND: |
+            python -c "import kittyops; print('backend:', kittyops.compression_backend())"
+            python -m unittest discover -s {project}/tests -p 'test_*.py' -v
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.os }}-${{ matrix.arch }}
+          path: wheelhouse/*.whl
+
+  sdist:
+    name: Build sdist
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install build
+      - run: python -m build --sdist --outdir dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+
+  release:
+    name: Publish release & PyPI
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [c-tests, wheels, sdist]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+      - name: Publish to PyPI (OIDC trusted publishing)
+        uses: pypa/gh-action-pypi-publish@release/v1
+        continue-on-error: true

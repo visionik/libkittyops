@@ -1,0 +1,52 @@
+[build-system]
+requires = ["scikit-build-core>=0.10"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "kittyops"
+version = "0.1.0"
+description = "High-performance C99 Kitty graphics accelerator (SIMD tile-diff, a=c scroll compose, parallel zlib/libdeflate) for pixcell and Python TUIs."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+authors = [{ name = "Visionik", email = "visionik@pobox.com" }]
+keywords = ["kitty", "terminal", "graphics", "pixcell", "textual", "simd", "zlib"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: C",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+]
+
+[project.urls]
+Homepage = "https://github.com/visionik/libkittyops"
+Repository = "https://github.com/visionik/libkittyops"
+
+[tool.scikit-build]
+wheel.packages = ["python/kittyops"]
+wheel.py-api = "py3"
+wheel.platlib = true
+cmake.build-type = "Release"
+sdist.include = [
+    "CMakeLists.txt",
+    "include/**",
+    "src/**",
+    "python/**",
+    "tests/**",
+    "LICENSE",
+    "README.md",
+]
+sdist.exclude = ["build/**", "dist/**"]
+
+[tool.scikit-build.cmake.define]
+KITTYOPS_PYTHON_WHEEL = "ON"
+KITTYOPS_PREFER_STATIC_DEPS = "ON"
+KITTYOPS_BUILD_STATIC = "OFF"
+KITTYOPS_BUILD_TESTS = "OFF"
+KITTYOPS_BUILD_BENCH = "OFF"

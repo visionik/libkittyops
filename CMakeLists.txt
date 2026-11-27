@@ -13,6 +13,7 @@ option(KITTYOPS_USE_LIBDEFLATE "Use libdeflate if found" ON)
 option(KITTYOPS_USE_ZLIB_NG "Prefer zlib-ng if found" ON)
 option(KITTYOPS_USE_ISAL "Use Intel ISA-L if found" ON)
 option(KITTYOPS_PREFER_STATIC_DEPS "Prefer static archives for optional compression deps (relocatable builds)" OFF)
+option(KITTYOPS_PYTHON_WHEEL "Build single unversioned shared lib installed into kittyops/ Python package" OFF)
 
 include(GNUInstallDirs)
 find_package(Threads REQUIRED)
@@ -106,11 +107,18 @@ endif()
 
 if(KITTYOPS_BUILD_SHARED)
   add_library(kittyops SHARED ${KOPS_SOURCES})
-  set_target_properties(kittyops PROPERTIES
-    VERSION ${PROJECT_VERSION}
-    SOVERSION 0
-    C_VISIBILITY_PRESET default
-  )
+  if(KITTYOPS_PYTHON_WHEEL)
+    set_target_properties(kittyops PROPERTIES
+      C_VISIBILITY_PRESET default
+      INSTALL_NAME_DIR "@loader_path"
+    )
+  else()
+    set_target_properties(kittyops PROPERTIES
+      VERSION ${PROJECT_VERSION}
+      SOVERSION 0
+      C_VISIBILITY_PRESET default
+    )
+  endif()
   kops_configure_target(kittyops)
   add_library(kittyops::shared ALIAS kittyops)
 endif()
@@ -138,10 +146,16 @@ if(KITTYOPS_BUILD_BENCH)
   target_include_directories(bench_kittyops PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 endif()
 
-install(FILES include/kittyops.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
-if(TARGET kittyops_static)
-  install(TARGETS kittyops_static ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
-endif()
-if(TARGET kittyops)
-  install(TARGETS kittyops LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR} RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+if(KITTYOPS_PYTHON_WHEEL)
+  if(TARGET kittyops)
+    install(TARGETS kittyops LIBRARY DESTINATION kittyops RUNTIME DESTINATION kittyops)
+  endif()
+else()
+  install(FILES include/kittyops.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+  if(TARGET kittyops_static)
+    install(TARGETS kittyops_static ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
+  endif()
+  if(TARGET kittyops)
+    install(TARGETS kittyops LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR} RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+  endif()
 endif()
